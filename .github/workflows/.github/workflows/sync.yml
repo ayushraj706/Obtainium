@@ -1,0 +1,27 @@
+name: Auto Sync with Upstream
+
+on:
+  schedule:
+    - cron: '0 */12 * * *' # Har 12 ghante me automatic chalega
+  workflow_dispatch: # Manual sync ka button
+
+jobs:
+  sync_latest_from_upstream:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout target repo
+        uses: actions/checkout@v4
+
+      - name: Sync upstream changes
+        id: sync
+        uses: aormsby/Fork-Sync-With-Upstream-action@v3.4
+        with:
+          upstream_sync_repo: ImranR98/Obtainium # Original repo ka link
+          upstream_sync_branch: main
+          target_sync_branch: main
+          target_repo_token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Sync check
+        if: failure()
+        run: echo "Sync failed. Manual intervention needed."
+        
