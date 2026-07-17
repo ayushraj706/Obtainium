@@ -3,52 +3,30 @@ name: Build and Release
 on:
   push:
     branches:
-      - main # Auto-sync hone par build apne aap shuru ho jayega
+      - main 
   workflow_dispatch:
-    inputs:
-      beta:
-        type: boolean
-        description: Is beta?
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
     steps:
-      
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+          
       - uses: subosito/flutter-action@v2
         with:
           channel: stable
+          
+      # --- FIXED: Metrolist ki tarah JDK 21 se JDK 17 par switch kiya stable signing ke liye ---
       - uses: actions/setup-java@v4
         with:
           distribution: 'temurin' 
-          java-version: '21'
+          java-version: '17'
 
       - name: Flutter Doctor
-        id: flutter_doctor
-        run: |
-          flutter doctor -v
-
-      - name: Check submodule
-        run: |
-          git submodule update --init --recursive
-
-      - name: Extract Version
-        id: extract_version      
-        run: |
-          VERSION=$(grep -oP "^version: [^\+]+" pubspec.yaml | tail -c +10)
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
-          
-          # Push aur Manual trigger ka check
-          if [ "${{ github.event_name }}" == "workflow_dispatch" ] && [ "${{ github.event.inputs.beta }}" == "true" ]; then BETA=true; else BETA=false; fi
-          echo "beta=$BETA" >> $GITHUB_OUTPUT
-          
-          # Auto-build ke time tags same na ho jayein isliye time lagaya hai
-          if [ "${{ github.event_name }}" == "push" ]; then TAG="v$VERSION-$(date +%s)"; else TAG="v$VERSION"; fi
-          echo "tag=$TAG" >> $GITHUB_OUTPUT
+        run: flutter doctor -v
 
       - name: Build APKs
         run: |
@@ -58,52 +36,56 @@ jobs:
           for file in build/app/outputs/flutter-apk/app-*normal*.apk*; do mv "$file" "${file//-normal/}"; done
           flutter build apk --flavor fdroid -t lib/main_fdroid.dart && flutter build apk --split-per-abi --flavor fdroid -t lib/main_fdroid.dart
           rm -f ./build/app/outputs/flutter-apk/*.sha1
-          cp ./sign.sh ./build/app/outputs/flutter-apk/
-          ls -l ./build/app/outputs/flutter-apk/
 
-      # --- YAHAN SE SIGNING START HOTA HAI ---
-      - name: Sign APK
-        uses: r0adkll/sign-android-release@v1
-        id: sign_app
-        with:
-          releaseDirectory: build/app/outputs/flutter-apk
-          signingKeyBase64: ${{ secrets.KEYSTORE_BASE64 }}
-          alias: ${{ secrets.KEY_ALIAS }}
-          keyStorePassword: ${{ secrets.KEYSTORE_PASSWORD }}
-          keyPassword: ${{ secrets.KEY_PASSWORD }}
+      # --- MANUAL KEYSTORE DIRECTORY SETUP (Env ke naam purane wale hi hain) ---
+      - name: Create Keystore Directory
+        run: mkdir -p keystore
 
-      - name: Save Signed APKs as Action Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          path: build/app/outputs/flutter-apk/*.apk
+      - name: Decode Keystore
+        run: echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 --decode > keystore/release.jks
 
-      - name: Create Tag
-        uses: mathieudutour/github-tag-action@v6.1
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          custom_tag: "${{ steps.extract_version.outputs.tag }}"
-          tag_prefix: ""
-      
-      - name: Create Release
+      # --- MANUAL SIGNING (Metrolist wala Zipalign aur Apksigner loop) ---
+      - name: Sign APKs
+        run: |
+          BUILD_TOOLS=$(ls -d $ANDROID_HOME/build-tools/* | tail -1)
+          for apk in $(find build/app/outputs/flutter-apk -type f -name '*.apk'); do
+            if [[ "$apk" == *"-aligned.apk" || "$apk" == *"-signed.apk" ]]; then
+              continue
+            fi
+            echo "Signing $apk"
+            $BUILD_TOOLS/zipalign -f -p 4 "$apk" "${apk%.apk}-aligned.apk"
+            $BUILD_TOOLS/apksigner sign --ks keystore/release.jks --ks-pass pass:${{ secrets.KEYSTORE_PASSWORD }} --ks-key-alias ${{ secrets.KEY_ALIAS }} --key-pass pass:${{ secrets.KEY_PASSWORD }} "${apk%.apk}-aligned.apk"
+            rm "$apk"
+            mv "${apk%.apk}-aligned.apk" "${apk%.apk}-signed.apk"
+          done
+
+      # --- ROLLING RELEASE ---
+      - name: Create or Update Latest Release
         uses: ncipollo/release-action@v1
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          tag: "${{ steps.extract_version.outputs.tag }}"
-          prerelease: "${{ steps.extract_version.outputs.beta }}"
-          artifacts: "build/app/outputs/flutter-apk/*.apk"
-          draft: "false" # Isey false rakha hai taaki seedha publish ho
+          tag: "latest" 
+          name: "Latest Build" 
+          allowUpdates: true 
+          replacesArtifacts: true 
+          prerelease: false
+          # Ab release me sirf wahi APKs jayengi jinke aage "-signed" likha hoga
+          artifacts: "build/app/outputs/flutter-apk/*-signed.apk" 
+          draft: "false"
           generateReleaseNotes: true
 
-      # --- TELEGRAM NOTIFICATION ---
-      - name: Send Telegram Notification
+      # --- TELEGRAM NOTIFICATION (Metrolist Style) ---
+      - name: Send Telegram Message with Download Link
+        continue-on-error: true
         uses: appleboy/telegram-action@master
         if: success()
         with:
           to: ${{ secrets.TELEGRAM_TO }}
           token: ${{ secrets.TELEGRAM_TOKEN }}
           message: |
-            🚀 Naya Obtainium Build Ready Hai!
+            ✅ Obtainium Build Successful!
             
-            Version: ${{ steps.extract_version.outputs.tag }}
+            Commit: ${{ github.event.commits[0].message || 'Manual/Sync Build' }}
             
-            Aapka Signed APK GitHub Releases me publish ho gaya hai!
+            👇 Yahan click karke direct APK download karein:
+            https://github.com/${{ github.repository }}/releases/latest
