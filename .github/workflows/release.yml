@@ -1,6 +1,9 @@
 name: Build and Release
 
 on:
+  push:
+    branches:
+      - main # Auto-sync hone par build apne aap shuru ho jayega
   workflow_dispatch:
     inputs:
       beta:
@@ -38,9 +41,13 @@ jobs:
         run: |
           VERSION=$(grep -oP "^version: [^\+]+" pubspec.yaml | tail -c +10)
           echo "version=$VERSION" >> $GITHUB_OUTPUT
-          if [ ${{ inputs.beta }} == true ]; then BETA=true; else BETA=false; fi
+          
+          # Push aur Manual trigger ka check
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ] && [ "${{ github.event.inputs.beta }}" == "true" ]; then BETA=true; else BETA=false; fi
           echo "beta=$BETA" >> $GITHUB_OUTPUT
-          TAG="v$VERSION"
+          
+          # Auto-build ke time tags same na ho jayein isliye time lagaya hai
+          if [ "${{ github.event_name }}" == "push" ]; then TAG="v$VERSION-$(date +%s)"; else TAG="v$VERSION"; fi
           echo "tag=$TAG" >> $GITHUB_OUTPUT
 
       - name: Build APKs
@@ -54,23 +61,49 @@ jobs:
           cp ./sign.sh ./build/app/outputs/flutter-apk/
           ls -l ./build/app/outputs/flutter-apk/
 
-      - name: Save Unsigned APKs as Action Artifacts
+      # --- YAHAN SE SIGNING START HOTA HAI ---
+      - name: Sign APK
+        uses: r0adkll/sign-android-release@v1
+        id: sign_app
+        with:
+          releaseDirectory: build/app/outputs/flutter-apk
+          signingKeyBase64: ${{ secrets.KEYSTORE_BASE64 }}
+          alias: ${{ secrets.KEY_ALIAS }}
+          keyStorePassword: ${{ secrets.KEYSTORE_PASSWORD }}
+          keyPassword: ${{ secrets.KEY_PASSWORD }}
+
+      - name: Save Signed APKs as Action Artifacts
         uses: actions/upload-artifact@v4
         with:
-          path: build/app/outputs/flutter-apk/*
+          path: build/app/outputs/flutter-apk/*.apk
 
       - name: Create Tag
         uses: mathieudutour/github-tag-action@v6.1
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }} # Yahan fix kar diya hai
+          github_token: ${{ secrets.GITHUB_TOKEN }}
           custom_tag: "${{ steps.extract_version.outputs.tag }}"
           tag_prefix: ""
       
-      - name: Create Draft Release
+      - name: Create Release
         uses: ncipollo/release-action@v1
         with:
-          token: ${{ secrets.GITHUB_TOKEN }} # Aur yahan bhi fix kar diya hai
+          token: ${{ secrets.GITHUB_TOKEN }}
           tag: "${{ steps.extract_version.outputs.tag }}"
           prerelease: "${{ steps.extract_version.outputs.beta }}"
-          draft: "true"
+          artifacts: "build/app/outputs/flutter-apk/*.apk"
+          draft: "false" # Isey false rakha hai taaki seedha publish ho
           generateReleaseNotes: true
+
+      # --- TELEGRAM NOTIFICATION ---
+      - name: Send Telegram Notification
+        uses: appleboy/telegram-action@master
+        if: success()
+        with:
+          to: ${{ secrets.TELEGRAM_TO }}
+          token: ${{ secrets.TELEGRAM_TOKEN }}
+          message: |
+            🚀 Naya Obtainium Build Ready Hai!
+            
+            Version: ${{ steps.extract_version.outputs.tag }}
+            
+            Aapka Signed APK GitHub Releases me publish ho gaya hai!
