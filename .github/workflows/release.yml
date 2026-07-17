@@ -21,7 +21,7 @@ jobs:
           channel: stable
       - uses: actions/setup-java@v4
         with:
-          distribution: 'temurin' # See 'Supported distributions' for available options
+          distribution: 'temurin' 
           java-version: '21'
 
       - name: Flutter Doctor
@@ -46,11 +46,7 @@ jobs:
       - name: Build APKs
         run: |
           flutter pub get
-          # TODO: Remove once Flutter's libdartjni.so no longer embeds a non-reproducible build ID
           sed -i -e 's/-Wl,/-Wl,--build-id=none,/' ${PUB_CACHE:-$HOME/.pub-cache}/hosted/*/jni-*/src/CMakeLists.txt
-          # No key.properties exists in CI, so build.gradle.kts already sets
-          # signingConfig = null and produces unsigned APKs (signing happens
-          # separately in the sign.sh script).
           flutter build apk --flavor normal && flutter build apk --split-per-abi --flavor normal
           for file in build/app/outputs/flutter-apk/app-*normal*.apk*; do mv "$file" "${file//-normal/}"; done
           flutter build apk --flavor fdroid -t lib/main_fdroid.dart && flutter build apk --split-per-abi --flavor fdroid -t lib/main_fdroid.dart
@@ -66,14 +62,14 @@ jobs:
       - name: Create Tag
         uses: mathieudutour/github-tag-action@v6.1
         with:
-          github_token: ${{ secrets.GH_ACCESS_TOKEN }}
+          github_token: ${{ secrets.GITHUB_TOKEN }} # Yahan fix kar diya hai
           custom_tag: "${{ steps.extract_version.outputs.tag }}"
           tag_prefix: ""
       
       - name: Create Draft Release
         uses: ncipollo/release-action@v1
         with:
-          token: ${{ secrets.ACCESS_TOKEN }}
+          token: ${{ secrets.GITHUB_TOKEN }} # Aur yahan bhi fix kar diya hai
           tag: "${{ steps.extract_version.outputs.tag }}"
           prerelease: "${{ steps.extract_version.outputs.beta }}"
           draft: "true"
